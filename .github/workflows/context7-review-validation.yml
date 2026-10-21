@@ -1,0 +1,59 @@
+name: Validate Context7 PR without credentials
+
+on:
+  push:
+    branches:
+      - review/pr3059-ci-validation-20261021
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend lint and complete connector catalog tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked backend test dependencies
+        run: uv sync --frozen --group dev
+      - name: Ruff lint
+        run: uv run --no-sync ruff check .
+      - name: Connector catalog regression
+        run: uv run --no-sync python -m pytest tests/connectors/test_catalog.py -q
+  frontend:
+    name: Frontend lint, unit tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: npm run lint --prefix frontend
+      - run: npm test --prefix frontend
+      - run: npm run build --prefix frontend
+  docs:
+    name: Documentation production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci --prefix docs
+      - run: npm run dates:check --prefix docs
+      - run: npm run build --prefix docs
