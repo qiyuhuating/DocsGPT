@@ -1,0 +1,92 @@
+name: Context7 public OAuth protocol probe
+
+on:
+  push:
+    branches:
+      - review/pr3059-oauth-public-probe-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  discovery:
+    name: Validate anonymous OAuth challenge and metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Probe OAuth metadata without credentials
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          URL = "https://mcp.context7.com/mcp/oauth"
+          payload = json.dumps({
+              "jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {
+                  "protocolVersion": "2025-06-18",
+                  "capabilities": {},
+                  "clientInfo": {"name": "docsgpt-ci-anonymous-probe", "version": "0"},
+              },
+          }).encode()
+          req = urllib.request.Request(URL, data=payload, method="POST", headers={
+              "Content-Type": "application/json",
+              "Accept": "application/json, text/event-stream",
+              "MCP-Protocol-Version": "2025-06-18",
+          })
+          try:
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  status = response.status
+                  challenge = response.headers.get("WWW-Authenticate", "")
+          except urllib.error.HTTPError as exc:
+              status = exc.code
+              challenge = exc.headers.get("WWW-Authenticate", "")
+          print("Unauthenticated MCP initialize HTTP status:", status)
+          assert status == 401, "OAuth endpoint must challenge unauthenticated clients"
+          assert re.search(r"\bBearer\b", challenge, flags=re.I), "Missing Bearer challenge"
+          print("Bearer challenge received")
+          match = re.search(r'resource_metadata="([^"]+)"', challenge)
+          assert match, "Missing resource_metadata location in WWW-Authenticate"
+          resource_uri = match.group(1)
+          assert resource_uri.startswith("https://mcp.context7.com/"), "Unexpected resource metadata host"
+          with urllib.request.urlopen(resource_uri, timeout=20) as response:
+              resource = json.load(response)
+          servers = resource.get("authorization_servers", [])
+          assert isinstance(servers, list) and servers, "Missing authorization_servers"
+          issuer = servers[0]
+          parsed = urllib.parse.urlparse(issuer)
+          assert parsed.scheme == "https" and parsed.hostname in (
+              "clerk.context7.com", "mcp.context7.com"
+          ), "Unexpected authorization server"
+          paths = [
+              "/.well-known/oauth-authorization-server" + parsed.path.rstrip("/"),
+              parsed.path.rstrip("/") + "/.well-known/oauth-authorization-server",
+              "/.well-known/openid-configuration" + parsed.path.rstrip("/"),
+          ]
+          metadata = None
+          for path in dict.fromkeys(paths):
+              uri = f"{parsed.scheme}://{parsed.netloc}{path}"
+              try:
+                  with urllib.request.urlopen(uri, timeout=20) as response:
+                      metadata = json.load(response)
+                  print("OAuth authorization server metadata discovered at:", uri)
+                  break
+              except (urllib.error.HTTPError, ValueError):
+                  continue
+          assert metadata, "OAuth authorization server metadata discovery failed"
+          assert metadata.get("authorization_endpoint"), "Missing authorization endpoint"
+          assert metadata.get("token_endpoint"), "Missing token endpoint"
+          assert metadata.get("registration_endpoint"), "Missing dynamic client registration"
+          pkce = metadata.get("code_challenge_methods_supported", [])
+          assert "S256" in pkce, "Metadata lacks PKCE S256 support"
+          print("Public protocol discovery: PASS")
+          print("No client registration, token exchange, OAuth login, or tool calls performed.")
+          PY
