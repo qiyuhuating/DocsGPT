@@ -1,0 +1,26 @@
+name: Verify upstream analytics planner baseline
+
+on:
+  push:
+    branches:
+      - review/pr3059-analytics-baseline-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-analytics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install same requirements as upstream pytest workflow
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docsgpt/requirements.txt
+          python -m pip install -r tests/requirements.txt
+      - name: Reproduce all three planner assertions on unchanged upstream sources
+        run: python -m pytest -q tests/analytics/test_sweep.py::TestScale::test_the_exclusion_is_hashed_in_a_generic_plan
